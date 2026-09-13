@@ -29,5 +29,5 @@
 
 ### Change some application file and push to gitHub, the gitHub action will trigger
 
-### Hit VM_ip>:5000 on the browser
+### Hit <VM_public_ip>:5000 on the browser
     You wull see your app on the browser
