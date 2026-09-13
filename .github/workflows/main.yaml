@@ -29,58 +29,49 @@ jobs:
     needs: build-and-push
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
-
-      - name: Deploy to AZURE VM
-        run: |
-          echo "${{ secrets.AZURE_KEY }}" > private_key.pem
-          chmod 600 private_key.pem
-
-          ssh \
-          -o StrictHostKeyChecking=no \
-          -o IdentitiesOnly=yes \
-          -i private_key.pem \
-          "${{ secrets.AZURE_USER }}@${{ secrets.AZURE_HOST }}" << 'EOF'
-
-            # Set up Docker network (if needed)
+      - name: Deploy to Azure VM via SSH
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.AZURE_HOST }}
+          username: ${{ secrets.AZURE_USER }}
+          key: ${{ secrets.AZURE_KEY }}
+          script: |
+            # 1. Create Docker Network
             docker network create app_network || true
 
-            # Stop and remove existing MySQL and Flask containers if they exist
-            docker stop mysql-db || true
-            docker rm mysql-db || true
+            # 2. MySQL Container service check and start
+            if [ ! "$(docker ps -q -f name=mysql-db)" ]; then
+                docker stop mysql-db || true
+                docker rm mysql-db || true
+                docker run -d \
+                  --name mysql-db \
+                  --network app_network \
+                  -e MYSQL_ROOT_PASSWORD="${{ secrets.DB_PASSWORD }}" \
+                  -e MYSQL_DATABASE="${{ secrets.DB_NAME }}" \
+                  -p 3306:3306 \
+                  mysql:latest
+                
+                echo "Waiting for MySQL to initialize..."
+                sleep 20
+            fi
+
+            # 3. pull new image
+            docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }}
+            docker pull ${{ secrets.DOCKER_USERNAME }}/flask-attendance-app:latest
+
+            # 4. update old container
             docker stop flask-app || true
             docker rm flask-app || true
 
-            # Run MySQL container
-            docker run -d \
-              --name mysql-db \
-              --network app_network \
-              -e MYSQL_ROOT_PASSWORD=root \
-              -e MYSQL_DATABASE=attendance_db \
-              -p 3306:3306 \
-              mysql:latest
-
-            # Wait for MySQL to fully start
-            echo "Waiting for MySQL to initialize..."
-            sleep 30
-
-            # Create database (this is optional if you want to ensure it exists)
-            docker exec mysql-db mysql -uroot -prootpassword -e "CREATE DATABASE IF NOT EXISTS attendance_db;"
-
-            # Pull latest Flask app
-            docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }}
-            docker pull ${{ secrets.DOCKER_USERNAME }}/flask-attendance-app
-
-            # Run Flask app container
             docker run -d \
               --name flask-app \
               --network app_network \
               -p 5000:5000 \
               -e DB_HOST=mysql-db \
-              -e DB_USER=root \
-              -e DB_PASSWORD=root \
-              -e DB_NAME=attendance_db \
-              ${{ secrets.DOCKER_USERNAME }}/flask-attendance-app
+              -e DB_USER="${{ secrets.DB_USER }}" \
+              -e DB_PASSWORD="${{ secrets.DB_PASSWORD }}" \
+              -e DB_NAME="${{ secrets.DB_NAME }}" \
+              ${{ secrets.DOCKER_USERNAME }}/flask-attendance-app:latest
 
-          EOF
+            # 5. System Cleanup
+            docker image prune -f
