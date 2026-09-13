@@ -1,8 +1,8 @@
 # How to create CI/CD with GitHub Action
 
-## Create an EC2 machine with SSH_key (free tier sufficient)
+## Create an VM machine with SSH_key (free tier sufficient)
 
-### Install Docker in the EC2 Machine
+### Install Docker in the VM Machine
 
     sudo apt update -y
     sudo apt install -y docker.io
@@ -17,7 +17,7 @@
 
 
 ### From repository settings, add the folllowing Secrets
-    AZURE_HOST >> your EC2 machine_ip
+    AZURE_HOST >> your VM machine_ip
     AZURE_KEY >> key.pem text
     AZURE_USER >> ubuntu, unless you created another user
     DOCKER_PASSWORD >> DockerHub PAT
