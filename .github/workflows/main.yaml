@@ -64,14 +64,14 @@ jobs:
             docker rm flask-app || true
 
             docker run -d \
-              --name flask-app \
-              --network app_network \
-              -p 5000:5000 \
-              -e DB_HOST=mysql-db \
-              -e DB_USER="${{ secrets.DB_USER }}" \
-              -e DB_PASSWORD="${{ secrets.DB_PASSWORD }}" \
-              -e DB_NAME="${{ secrets.DB_NAME }}" \
-              ${{ secrets.DOCKER_USERNAME }}/flask-attendance-app:latest
+            --name flask-app \
+            --network app_network \
+            -p 5000:5000 \
+            -e DB_HOST=mysql-db \
+            -e DB_USER="root" \
+            -e DB_PASSWORD="MySecurePass123!" \
+            -e DB_NAME="attendance_db" \
+            mazedulhaquemithun/flask-attendance-app:latest
 
             # 5. System Cleanup
             docker image prune -f
