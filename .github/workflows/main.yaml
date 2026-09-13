@@ -34,10 +34,10 @@ jobs:
 
       - name: Deploy to Azure VM
         run: |
-          echo "${{ secrets.AZURE_KEY }}" > private_key.pem
-          chmod 600 private_key.pem
+          echo "${{ secrets.AZURE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
 
-          ssh -o StrictHostKeyChecking=no -i private_key.pem ${{ secrets.AZURE_USER }}@${{ secrets.AZURE_HOST }} << 'EOF'
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ${{ secrets.AZURE_USER }}@${{ secrets.AZURE_HOST }} << 'EOF'
 
             # Set up Docker network (if needed)
             docker network create app_network || true
