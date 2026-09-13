@@ -17,9 +17,9 @@
 
 
 ### From repository settings, add the folllowing Secrets
-    AWS_HOST >> your EC2 machine_ip
-    AWS_KEY >> key.pem text
-    AWS_USER >> ubuntu, unless you created another user
+    AZURE_HOST >> your EC2 machine_ip
+    AZURE_KEY >> key.pem text
+    AZURE_USER >> ubuntu, unless you created another user
     DOCKER_PASSWORD >> DockerHub PAT
     DOCKER_USERNAME >> DockerHub user_name
 
@@ -29,5 +29,5 @@
 
 ### Change some application file and push to gitHub, the gitHub action will trigger
 
-### Hit <EC2_machine_ip>:5000 on the browser
+### Hit VM_ip>:5000 on the browser
     You wull see your app on the browser
