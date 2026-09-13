@@ -34,7 +34,7 @@ jobs:
 
       - name: Deploy to AZURE VM
         run: |
-          printf '%s\n' "${{ secrets.AZURE_KEY }}" > private_key.pem
+          echo "${{ secrets.AZURE_KEY }}" > private_key.pem
           chmod 600 private_key.pem
 
           ssh \
