@@ -1,77 +1,663 @@
-name: CI/CD for Flask App (Without Docker Compose)
+name: CI/CD for Flask Attendance App
 
 on:
   push:
     branches:
-      - main  # Trigger pipeline on push to main
+      - main
 
 jobs:
+
+  # ============================================================
+  # BUILD & PUSH DOCKER IMAGE
+  # ============================================================
+
   build-and-push:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3
 
       - name: Login to Docker Hub
-        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+        run: |
+          echo "$DOCKER_PASSWORD" | docker login \
+            -u "$DOCKER_USERNAME" \
+            --password-stdin
 
       - name: Build and Push Docker Image
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
         run: |
-          docker build -t ${{ secrets.DOCKER_USERNAME }}/flask-attendance-app .
-          docker push ${{ secrets.DOCKER_USERNAME }}/flask-attendance-app
+          docker build \
+            -t "$DOCKER_USERNAME/flask-attendance-app:latest" \
+            -t "$DOCKER_USERNAME/flask-attendance-app:${{ github.sha }}" \
+            .
+
+          docker push "$DOCKER_USERNAME/flask-attendance-app:latest"
+          docker push "$DOCKER_USERNAME/flask-attendance-app:${{ github.sha }}"
+
+
+  # ============================================================
+  # DEPLOY TO AZURE VM
+  # ============================================================
 
   deploy:
     runs-on: ubuntu-latest
     needs: build-and-push
 
     steps:
-      - name: Deploy to Azure VM via SSH
-        uses: appleboy/ssh-action@v1.0.0
+
+      - name: Deploy to Azure VM
+        uses: appleboy/ssh-action@v1.2.0
+
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+
         with:
           host: ${{ secrets.AZURE_HOST }}
           username: ${{ secrets.AZURE_USER }}
           key: ${{ secrets.AZURE_KEY }}
-          script: |
-            # 1. Create Docker Network
-            docker network create app_network || true
 
-            # 2. MySQL Container service check and start
-            if [ ! "$(docker ps -q -f name=mysql-db)" ]; then
-                docker stop mysql-db || true
-                docker rm mysql-db || true
-                docker run -d \
-                  --name mysql-db \
-                  --network app_network \
-                  -e MYSQL_ROOT_PASSWORD="MySecurePass123!" \
-                  -e MYSQL_DATABASE="attendance_db" \
-                  -p 3306:3306 \
-                  mysql:latest
-                
-                echo "Waiting for MySQL to initialize..."
-                sleep 20
+          envs: DOCKER_USERNAME,DOCKER_PASSWORD,DB_PASSWORD,DB_NAME,DB_USER
+
+          script: |
+
+            set -e
+
+            echo "=========================================="
+            echo "Starting deployment"
+            echo "Commit: ${{ github.sha }}"
+            echo "=========================================="
+
+
+            # ==================================================
+            # VARIABLES
+            # ==================================================
+
+            APP_NAME="flask-attendance-app"
+
+            IMAGE="$DOCKER_USERNAME/flask-attendance-app:latest"
+
+            NETWORK="app_network"
+
+            BLUE_CONTAINER="flask-app-blue"
+            GREEN_CONTAINER="flask-app-green"
+
+            BLUE_PORT="5001"
+            GREEN_PORT="5002"
+
+            MYSQL_CONTAINER="mysql-db"
+
+            MYSQL_DATA="/opt/attendance/mysql-data"
+            BACKUP_DIR="/opt/attendance/backups"
+
+            NGINX_CONFIG="/etc/nginx/conf.d/attendance.conf"
+
+            echo "Application image: $IMAGE"
+
+
+            # ==================================================
+            # 1. CREATE REQUIRED DIRECTORIES
+            # ==================================================
+
+            echo "Creating application directories..."
+
+            sudo mkdir -p "$MYSQL_DATA"
+            sudo mkdir -p "$BACKUP_DIR"
+
+            sudo chmod 700 "$BACKUP_DIR"
+
+
+            # ==================================================
+            # 2. CREATE DOCKER NETWORK
+            # ==================================================
+
+            echo "Creating Docker network..."
+
+            if ! sudo docker network inspect "$NETWORK" >/dev/null 2>&1; then
+
+              sudo docker network create "$NETWORK"
+
             fi
 
-            # 3. pull new image
-            docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }}
-            docker pull ${{ secrets.DOCKER_USERNAME }}/flask-attendance-app:latest
 
-            # 4. update old container
-            docker stop flask-app || true
-            docker rm flask-app || true
+            # ==================================================
+            # 3. INSTALL NGINX IF NOT INSTALLED
+            # ==================================================
 
-            docker run -d \
-            --name flask-app \
-            --network app_network \
-            -p 5000:5000 \
-            -e DB_HOST=mysql-db \
-            -e DB_USER="root" \
-            -e DB_PASSWORD="MySecurePass123!" \
-            -e DB_NAME="attendance_db" \
-            mazedulhaquemithun/flask-attendance-app:latest
+            echo "Checking Nginx..."
 
-            # 5. System Cleanup
-            docker image prune -f
+            if ! command -v nginx >/dev/null 2>&1; then
+
+              echo "Nginx is not installed."
+
+              sudo apt-get update
+
+              sudo DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y nginx
+
+            fi
+
+
+            # ==================================================
+            # 4. CREATE NGINX CONFIG
+            # ==================================================
+
+            echo "Creating Nginx configuration..."
+
+            sudo mkdir -p /etc/nginx/conf.d
+
+
+            if [ ! -f "$NGINX_CONFIG" ]; then
+
+              sudo tee "$NGINX_CONFIG" > /dev/null <<'NGINX'
+            server {
+
+                listen 80 default_server;
+
+                server_name _;
+
+                location / {
+
+                    proxy_pass http://127.0.0.1:5001;
+
+                    proxy_http_version 1.1;
+
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+
+                    proxy_connect_timeout 5s;
+                    proxy_send_timeout 60s;
+                    proxy_read_timeout 60s;
+                }
+            }
+            NGINX
+
+            fi
+
+
+            # ==================================================
+            # 5. ENABLE NGINX
+            # ==================================================
+
+            sudo nginx -t
+
+            sudo systemctl enable nginx
+
+            sudo systemctl restart nginx
+
+
+            # ==================================================
+            # 6. DOCKER HUB LOGIN
+            # ==================================================
+
+            echo "Logging into Docker Hub..."
+
+            echo "$DOCKER_PASSWORD" | sudo docker login \
+              -u "$DOCKER_USERNAME" \
+              --password-stdin
+
+
+            # ==================================================
+            # 7. MYSQL SETUP
+            # ==================================================
+
+            echo "Checking MySQL container..."
+
+
+            MYSQL_EXISTS=$(sudo docker ps -aq \
+              -f "name=^${MYSQL_CONTAINER}$")
+
+
+            if [ -z "$MYSQL_EXISTS" ]; then
+
+              echo "MySQL container does not exist."
+
+              echo "Creating persistent MySQL container..."
+
+              sudo docker run -d \
+                --name "$MYSQL_CONTAINER" \
+                --network "$NETWORK" \
+                -e MYSQL_ROOT_PASSWORD="$DB_PASSWORD" \
+                -e MYSQL_DATABASE="$DB_NAME" \
+                -v "$MYSQL_DATA:/var/lib/mysql" \
+                --restart unless-stopped \
+                mysql:8.0
+
+            else
+
+              echo "MySQL container already exists."
+
+              MYSQL_RUNNING=$(sudo docker ps -q \
+                -f "name=^${MYSQL_CONTAINER}$")
+
+              if [ -z "$MYSQL_RUNNING" ]; then
+
+                echo "Starting existing MySQL container..."
+
+                sudo docker start "$MYSQL_CONTAINER"
+
+              fi
+
+            fi
+
+
+            # ==================================================
+            # 8. WAIT FOR MYSQL
+            # ==================================================
+
+            echo "Waiting for MySQL..."
+
+            MYSQL_READY=false
+
+            for i in $(seq 1 60); do
+
+              if sudo docker exec "$MYSQL_CONTAINER" \
+                mysqladmin ping \
+                -h 127.0.0.1 \
+                -u root \
+                -p"$DB_PASSWORD" \
+                --silent >/dev/null 2>&1; then
+
+                MYSQL_READY=true
+
+                echo "MySQL is ready."
+
+                break
+
+              fi
+
+              echo "Waiting for MySQL... ($i/60)"
+
+              sleep 2
+
+            done
+
+
+            if [ "$MYSQL_READY" != "true" ]; then
+
+              echo "ERROR: MySQL did not become ready."
+
+              exit 1
+
+            fi
+
+
+            # ==================================================
+            # 9. CREATE DATABASE BACKUP
+            # ==================================================
+
+            echo "Creating database backup..."
+
+            TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+
+            BACKUP_FILE="$BACKUP_DIR/attendance_$TIMESTAMP.sql.gz"
+
+
+            sudo docker exec "$MYSQL_CONTAINER" \
+              mysqldump \
+              -u root \
+              -p"$DB_PASSWORD" \
+              --single-transaction \
+              --routines \
+              --triggers \
+              "$DB_NAME" \
+              | gzip \
+              | sudo tee "$BACKUP_FILE" > /dev/null
+
+
+            if [ ! -s "$BACKUP_FILE" ]; then
+
+              echo "ERROR: Database backup failed."
+
+              exit 1
+
+            fi
+
+
+            echo "Database backup created:"
+            echo "$BACKUP_FILE"
+
+
+            # ==================================================
+            # 10. BACKUP RETENTION
+            # Keep latest 7 backups
+            # ==================================================
+
+            echo "Cleaning old backups..."
+
+            sudo bash -c "
+              ls -1t $BACKUP_DIR/*.sql.gz 2>/dev/null |
+              tail -n +8 |
+              xargs -r rm -f
+            "
+
+
+            # ==================================================
+            # 11. PULL NEW DOCKER IMAGE
+            # ==================================================
+
+            echo "Pulling new Docker image..."
+
+            sudo docker pull "$IMAGE"
+
+
+            # ==================================================
+            # 12. DETERMINE ACTIVE CONTAINER
+            # ==================================================
+
+            BLUE_RUNNING=$(sudo docker ps -q \
+              -f "name=^${BLUE_CONTAINER}$")
+
+            GREEN_RUNNING=$(sudo docker ps -q \
+              -f "name=^${GREEN_CONTAINER}$")
+
+
+            CURRENT_PORT=""
+
+            if [ -n "$BLUE_RUNNING" ]; then
+
+              CURRENT_PORT="$BLUE_PORT"
+
+              echo "Current active container: BLUE"
+
+            elif [ -n "$GREEN_RUNNING" ]; then
+
+              CURRENT_PORT="$GREEN_PORT"
+
+              echo "Current active container: GREEN"
+
+            else
+
+              echo "No application container currently running."
+
+            fi
+
+
+            # ==================================================
+            # 13. SELECT NEW CONTAINER
+            # ==================================================
+
+            if [ "$CURRENT_PORT" = "$BLUE_PORT" ]; then
+
+              NEW_CONTAINER="$GREEN_CONTAINER"
+              NEW_PORT="$GREEN_PORT"
+
+            else
+
+              NEW_CONTAINER="$BLUE_CONTAINER"
+              NEW_PORT="$BLUE_PORT"
+
+            fi
+
+
+            echo "New container: $NEW_CONTAINER"
+            echo "New port: $NEW_PORT"
+
+
+            # ==================================================
+            # 14. REMOVE OLD CONTAINER WITH SAME NAME
+            # ==================================================
+
+            if sudo docker ps -aq \
+              -f "name=^${NEW_CONTAINER}$" | grep -q .; then
+
+              echo "Removing previous $NEW_CONTAINER..."
+
+              sudo docker rm -f "$NEW_CONTAINER"
+
+            fi
+
+
+            # ==================================================
+            # 15. START NEW APPLICATION
+            # ==================================================
+
+            echo "Starting new application container..."
+
+            sudo docker run -d \
+              --name "$NEW_CONTAINER" \
+              --network "$NETWORK" \
+              -p "127.0.0.1:${NEW_PORT}:5000" \
+              -e DB_HOST="$MYSQL_CONTAINER" \
+              -e DB_PORT="3306" \
+              -e DB_USER="$DB_USER" \
+              -e DB_PASSWORD="$DB_PASSWORD" \
+              -e DB_NAME="$DB_NAME" \
+              -e LOG_LEVEL="INFO" \
+              --restart unless-stopped \
+              "$IMAGE"
+
+
+            # ==================================================
+            # 16. WAIT FOR APPLICATION
+            # ==================================================
+
+            echo "Waiting for new application..."
+
+            APP_READY=false
+
+            for i in $(seq 1 60); do
+
+              if curl \
+                --fail \
+                --silent \
+                --show-error \
+                "http://127.0.0.1:${NEW_PORT}/health" \
+                >/dev/null 2>&1; then
+
+                APP_READY=true
+
+                echo "New application is healthy."
+
+                break
+
+              fi
+
+              echo "Waiting for application... ($i/60)"
+
+              sleep 2
+
+            done
+
+
+            # ==================================================
+            # 17. ROLLBACK IF HEALTH CHECK FAILS
+            # ==================================================
+
+            if [ "$APP_READY" != "true" ]; then
+
+              echo "=========================================="
+              echo "DEPLOYMENT FAILED"
+              echo "New application failed health check."
+              echo "Old application will remain active."
+              echo "=========================================="
+
+
+              echo "New container logs:"
+
+              sudo docker logs \
+                --tail 100 \
+                "$NEW_CONTAINER" || true
+
+
+              sudo docker rm -f "$NEW_CONTAINER" || true
+
+
+              exit 1
+
+            fi
+
+
+            # ==================================================
+            # 18. SWITCH NGINX TRAFFIC
+            # ==================================================
+
+            echo "Switching Nginx traffic..."
+
+
+            sudo sed -i \
+              "s|proxy_pass http://127.0.0.1:[0-9]*;|proxy_pass http://127.0.0.1:${NEW_PORT};|" \
+              "$NGINX_CONFIG"
+
+
+            # Test configuration before reload
+
+            if ! sudo nginx -t; then
+
+              echo "Nginx configuration test failed."
+
+              sudo docker rm -f "$NEW_CONTAINER" || true
+
+              exit 1
+
+            fi
+
+
+            # Graceful Nginx reload
+
+            sudo systemctl reload nginx
+
+
+            echo "Traffic switched to $NEW_CONTAINER."
+
+
+            # ==================================================
+            # 19. VERIFY THROUGH NGINX
+            # ==================================================
+
+            echo "Verifying application through Nginx..."
+
+            NGINX_READY=false
+
+            for i in $(seq 1 15); do
+
+              if curl \
+                --fail \
+                --silent \
+                --show-error \
+                http://127.0.0.1/health \
+                >/dev/null 2>&1; then
+
+                NGINX_READY=true
+
+                echo "Nginx is successfully serving the new application."
+
+                break
+
+              fi
+
+              sleep 1
+
+            done
+
+
+            # ==================================================
+            # 20. ROLLBACK IF NGINX VERIFICATION FAILS
+            # ==================================================
+
+            if [ "$NGINX_READY" != "true" ]; then
+
+              echo "Nginx verification failed."
+
+              if [ -n "$CURRENT_PORT" ]; then
+
+                echo "Rolling traffic back to old application..."
+
+                sudo sed -i \
+                  "s|proxy_pass http://127.0.0.1:[0-9]*;|proxy_pass http://127.0.0.1:${CURRENT_PORT};|" \
+                  "$NGINX_CONFIG"
+
+                sudo nginx -t
+
+                sudo systemctl reload nginx
+
+              fi
+
+
+              sudo docker rm -f "$NEW_CONTAINER" || true
+
+              exit 1
+
+            fi
+
+
+            # ==================================================
+            # 21. STOP OLD CONTAINER
+            # ==================================================
+
+            if [ -n "$CURRENT_PORT" ]; then
+
+              if [ "$CURRENT_PORT" = "$BLUE_PORT" ]; then
+
+                OLD_CONTAINER="$BLUE_CONTAINER"
+
+              else
+
+                OLD_CONTAINER="$GREEN_CONTAINER"
+
+              fi
+
+
+              if [ "$OLD_CONTAINER" != "$NEW_CONTAINER" ]; then
+
+                echo "Stopping old container: $OLD_CONTAINER"
+
+                sudo docker stop "$OLD_CONTAINER" || true
+
+                sudo docker rm "$OLD_CONTAINER" || true
+
+              fi
+
+            fi
+
+
+            # ==================================================
+            # 22. DOCKER CLEANUP
+            # ==================================================
+
+            echo "Cleaning unused Docker images..."
+
+            sudo docker image prune -f
+
+
+            # ==================================================
+            # 23. FINAL STATUS
+            # ==================================================
+
+            echo "=========================================="
+            echo "DEPLOYMENT SUCCESSFUL"
+            echo "=========================================="
+
+            echo "Active container:"
+            sudo docker ps \
+              --filter "name=${NEW_CONTAINER}" \
+              --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+
+            echo ""
+            echo "MySQL:"
+            sudo docker ps \
+              --filter "name=${MYSQL_CONTAINER}" \
+              --format "table {{.Names}}\t{{.Status}}"
+
+            echo ""
+            echo "Latest backups:"
+
+            sudo ls -lh "$BACKUP_DIR" | tail -n 10
+
+            echo ""
+            echo "Deployment completed successfully."

@@ -1,9 +1,18 @@
+import logging
+import os
+
 from flask import Flask
-from app.database import init_db
+
 
 app = Flask(__name__)
 
-# Initialize database on startup
-init_db()
+app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
 
-from app import routes  # Import routes after app initialization
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+)
+
+
+from app import routes
