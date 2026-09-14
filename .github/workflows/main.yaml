@@ -6,7 +6,6 @@ on:
       - main
 
 jobs:
-
   # ============================================================
   # BUILD & PUSH DOCKER IMAGE
   # ============================================================
@@ -15,7 +14,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -43,7 +41,6 @@ jobs:
           docker push "$DOCKER_USERNAME/flask-attendance-app:latest"
           docker push "$DOCKER_USERNAME/flask-attendance-app:${{ github.sha }}"
 
-
   # ============================================================
   # DEPLOY TO AZURE VM
   # ============================================================
@@ -53,7 +50,6 @@ jobs:
     needs: build-and-push
 
     steps:
-
       - name: Deploy to Azure VM
         uses: appleboy/ssh-action@v1.2.0
 
@@ -159,6 +155,7 @@ jobs:
 
             sudo mkdir -p /etc/nginx/conf.d
 
+            sudo rm -f /etc/nginx/sites-enabled/default
 
             if [ ! -f "$NGINX_CONFIG" ]; then
 
