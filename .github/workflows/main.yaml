@@ -70,6 +70,7 @@ jobs:
           script: |
 
             set -e
+            set -o pipefail
 
             echo "=========================================="
             echo "Starting deployment"
@@ -303,22 +304,37 @@ jobs:
 
             BACKUP_FILE="$BACKUP_DIR/attendance_$TIMESTAMP.sql.gz"
 
-
-            sudo docker exec "$MYSQL_CONTAINER" \
+            if sudo docker exec "$MYSQL_CONTAINER" \
               mysqldump \
               -u root \
               -p"$DB_PASSWORD" \
               --single-transaction \
               --routines \
               --triggers \
+              --set-gtid-purged=OFF \
               "$DB_NAME" \
               | gzip \
-              | sudo tee "$BACKUP_FILE" > /dev/null
+              | sudo tee "$BACKUP_FILE" > /dev/null; then
+
+              echo "Database backup created:"
+              echo "$BACKUP_FILE"
+
+            else
+
+              echo "ERROR: Database backup failed."
+
+              sudo rm -f "$BACKUP_FILE"
+
+              exit 1
+
+            fi
 
 
             if [ ! -s "$BACKUP_FILE" ]; then
 
-              echo "ERROR: Database backup failed."
+              echo "ERROR: Backup file is empty."
+
+              sudo rm -f "$BACKUP_FILE"
 
               exit 1
 
