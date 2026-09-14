@@ -215,16 +215,14 @@ jobs:
 
             echo "Checking MySQL container..."
 
-
-            MYSQL_EXISTS=$(sudo docker ps -aq \
-              -f "name=^${MYSQL_CONTAINER}$")
-
+            MYSQL_EXISTS=$(sudo docker ps -aq -f "name=^${MYSQL_CONTAINER}$")
 
             if [ -z "$MYSQL_EXISTS" ]; then
 
               echo "MySQL container does not exist."
-
               echo "Creating persistent MySQL container..."
+
+              sudo mkdir -p "$MYSQL_DATA"
 
               sudo docker run -d \
                 --name "$MYSQL_CONTAINER" \
@@ -292,60 +290,6 @@ jobs:
               exit 1
 
             fi
-
-
-            # ==================================================
-            # 9. CREATE DATABASE BACKUP
-            # ==================================================
-
-            echo "Creating database backup..."
-
-            TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
-
-            BACKUP_FILE="$BACKUP_DIR/attendance_${TIMESTAMP}.sql.gz"
-
-            echo "Running mysqldump..."
-
-            sudo docker exec "$MYSQL_CONTAINER" \
-              mysqldump \
-              -uroot \
-              -p"$DB_PASSWORD" \
-              --single-transaction \
-              --routines \
-              --triggers \
-              --set-gtid-purged=OFF \
-              "$DB_NAME" \
-              | sudo tee "$BACKUP_FILE" > /dev/null
-
-            if [ ! -s "$BACKUP_FILE" ]; then
-              echo "ERROR: Database backup failed."
-              sudo rm -f "$BACKUP_FILE"
-              exit 1
-            fi
-
-            echo "Compressing backup..."
-
-            sudo gzip "$BACKUP_FILE"
-
-            BACKUP_FILE="${BACKUP_FILE}.gz"
-
-            echo "Database backup created:"
-            sudo ls -lh "$BACKUP_FILE"
-
-
-            # ==================================================
-            # 10. BACKUP RETENTION
-            # Keep latest 7 backups
-            # ==================================================
-
-            echo "Cleaning old backups..."
-
-            sudo bash -c "
-              ls -1t $BACKUP_DIR/*.sql.gz 2>/dev/null |
-              tail -n +8 |
-              xargs -r rm -f
-            "
-
 
             # ==================================================
             # 11. PULL NEW DOCKER IMAGE
