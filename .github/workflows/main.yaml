@@ -315,13 +315,19 @@ jobs:
               --triggers \
               --set-gtid-purged=OFF \
               "$DB_NAME" \
-              | sudo gzip > "$BACKUP_FILE"
+              | sudo tee "$BACKUP_FILE" > /dev/null
 
             if [ ! -s "$BACKUP_FILE" ]; then
               echo "ERROR: Database backup failed."
               sudo rm -f "$BACKUP_FILE"
               exit 1
             fi
+
+            echo "Compressing backup..."
+
+            sudo gzip "$BACKUP_FILE"
+
+            BACKUP_FILE="${BACKUP_FILE}.gz"
 
             echo "Database backup created:"
             sudo ls -lh "$BACKUP_FILE"
